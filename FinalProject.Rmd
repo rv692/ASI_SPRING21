@@ -1,0 +1,1642 @@
+---
+title: "ASI_Final"
+author: "Raveena Vakil"
+date: "5/9/2021"
+output: html_document
+---
+
+---
+
+Raveena Vakil
+Applied Sequencing Informatics
+Final Project
+Topic: Project 1
+
+---
+
+Cell Ranger Output
+- Raw: contains both background and cell associated barcodes
+- Filtered: contains only detected cellular barcodes
+- Web Summary: html document with an overview of the cellranger results
+
+---
+
+Steps for Analysis:
+1) Initialize a Seurat object
+2) Quality Control
+3) Normalize the data
+4) Select variable genes across cells
+5) Removing confounding factors by regression
+6) Linear dimensionality reduction
+7) PCA-based clustering
+8) t-SNE & UMAP visualization 
+9) Identify differentially expressed genes
+
+---
+
+# Helpful Links:
+
+https://github.com/satijalab/seurat/wiki/Assay 
+https://github.com/igordot/seurat/blob/master/R/preprocessing.R
+https://satijalab.org/seurat/v3.0/immune_alignment.html 
+https://github.com/satijalab/seurat/wiki 
+https://broadinstitute.github.io/2019_scWorkshop/index.html 
+https://hemberg-lab.github.io/scRNA.seq.course/index.html
+https://satijalab.org/seurat/v3.0/pbmc3k_tutorial.html
+
+---
+
+```{r}
+# Load libraries
+
+library(tidyverse)
+library(dplyr)
+library(plyr)
+library(Matrix)
+library(devtools)
+library(Seurat)
+library(ggplot2)
+library(circlize)
+library(data.table)
+#library(cowplot)
+#library(DESeq2)
+#library(MAST)
+#detach("package:cowplot", unload=TRUE)
+packageVersion("Seurat")
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("ComplexHeatmap")
+library(ComplexHeatmap)
+
+if (!require(ReactomeGSA))
+  BiocManager::install("ReactomeGSA")
+
+```
+
+```{r}
+# Set working directory
+setwd("/Users/angelvakil/Documents/NYU Grad Masters/MASTER'S 2020-2022/Spring 2021/Applied Sequencing Informatics/Assignments/Final Project")
+```
+
+---
+
+Preprocessing
+
+- Import matrices 
+- Create Seurat objects 
+- Set minimum for cells (3) and features (200) to remove low quality cells 
+
+```{r}
+# DMSO1 (Biological Replicate)
+data_dir_dmso1 <- "./DMSO1/filtered_feature_bc_matrix/"
+list.files(data_dir_dmso1) # Should show barcodes.tsv, genes.tsv, and matrix.mtx
+exp_matrix_dmso1 <- Read10X(data.dir = data_dir_dmso1) #initialize with non-normalized data
+dmso1 <- CreateSeuratObject(counts = exp_matrix_dmso1, project = "DMSO1",
+                         min.cells = 3, min.features = 200)
+dmso1$stage <- "DMSO1"
+dmso1
+
+# DMSO4 (Biological Replicate)
+data_dir_dmso4 <- "./DMSO4/filtered_feature_bc_matrix/"
+list.files(data_dir_dmso4)
+exp_matrix_dmso4 <- Read10X(data.dir = data_dir_dmso4)
+dmso4 = CreateSeuratObject(counts = exp_matrix_dmso4, project = "DMSO4",
+                         min.cells = 3, min.features = 200)
+dmso4$stage <- "DMSO4"
+dmso4
+
+# LY
+data_dir_ly <- "./LY/filtered_feature_bc_matrix/"
+list.files(data_dir_ly)
+exp_matrix_ly <- Read10X(data.dir = data_dir_ly)
+ly = CreateSeuratObject(counts = exp_matrix_ly, project = "LY",
+                         min.cells = 3, min.features = 200)
+ly$stage <- "LY"
+ly
+
+# MIRIN
+data_dir_mirin <- "./MIRIN/filtered_feature_bc_matrix/"
+list.files(data_dir_mirin)
+exp_matrix_mirin <- Read10X(data.dir = data_dir_mirin)
+mirin = CreateSeuratObject(counts = exp_matrix_mirin, project = "MIRIN",
+                         min.cells = 3, min.features = 200)
+mirin$stage <- "MIRIN"
+mirin
+```
+
+```{r}
+# View imported matrix
+colnames(dmso1)
+rownames(dmso1)
+head(x = dmso1@meta.data, 20) #meta info about each cell
+dmso1[["RNA"]]@data #normalized expression matrix (log-scale)
+#?seurat
+```
+
+---
+
+Quality Control & Filtering
+
+```{r}
+# View summary of total expression by single cell
+summary(colSums(dmso1)) #mean = 13255
+summary(colSums(dmso4)) #mean = 10797.5
+summary(colSums(ly)) #mean = 19429
+summary(colSums(mirin)) #mean = 12698
+### Note that if the mean decreases it means that host gene expression is decreasing as viral expression increases
+### That is seen only in the case of comparing DMSO1 to MIRIN
+```
+
+```{r}
+# Violin Plots - calculate percentage of all counts belonging to a subset of the possible features for each cell
+VlnPlot(object = dmso1, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, 
+        cols = c("#19D1E6"),  pt.size = 0.25)
+VlnPlot(object = dmso4, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, 
+        cols = c("#19D1E6"),  pt.size = 0.25)
+VlnPlot(object = ly, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, 
+        cols = c("#19D1E6"),  pt.size = 0.25)
+VlnPlot(object = mirin, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, 
+        cols = c("#19D1E6"),  pt.size = 0.25)
+```
+
+```{r}
+# Visualize feature relationships: Count_RNA vs. Feature_RNA
+scatter_dmso1 <- FeatureScatter(object = dmso1, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",
+                               col = "lightblue") + xlim(c(0, 85000)) + ylim(c(0, 8000))
+scatter_dmso4 <- FeatureScatter(object = dmso4, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",
+                                col = "pink") + xlim(c(0, 85000)) + ylim(c(0, 8000))
+scatter_ly <- FeatureScatter(object = ly, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",
+                                 col = "darkgoldenrod1") + xlim(c(0, 85000)) + ylim(c(0, 8000))
+scatter_mirin <- FeatureScatter(object = mirin, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",
+                                 col = "lightgreen") + xlim(c(0, 85000)) + ylim(c(0, 8000))
+
+scatter_dmso1 #0.89
+
+scatter_dmso4 #0.95
+
+scatter_ly #0.94
+
+scatter_mirin #0.93
+```
+
+```{r}
+#CombinePlots(plots = list(scatter_dmso1, scatter_dmso4, scatter_ly, scatter_mirin), ncol = 2)
+### All appear to be a horizontal parabola (k * sqrt(x) relationship) & have a fairly high positive correlation (greater than 0.88)
+```
+
+```{r}
+# Distribution of expression levels by Feature and Cell
+hist(rowSums(as.data.frame(dmso1[["RNA"]]@data)),
+     breaks = 100, main = "DMSO1: Expression sum by Feature",
+     xlab = "Sum Expression")
+hist(colSums(as.data.frame(dmso1[["RNA"]]@data)),
+     breaks = 100, main = "DMSO1: Expression sum by Cell",
+     xlab = "Sum Expression")
+hist(rowSums(as.data.frame(dmso4[["RNA"]]@data)),
+     breaks = 100, main = "DMSO4: Expression sum by Feature",
+     xlab = "Sum Expression")
+hist(colSums(as.data.frame(dmso4[["RNA"]]@data)),
+     breaks = 100, main = "DMSO4: Expression sum by Cell",
+     xlab = "Sum Expression")
+hist(rowSums(as.data.frame(ly[["RNA"]]@data)),
+     breaks = 100, main = "LY: Expression sum by Feature",
+     xlab = "Sum Expression")
+hist(colSums(as.data.frame(ly[["RNA"]]@data)),
+     breaks = 100, main = "LY: Expression sum by Cell",
+     xlab = "Sum Expression")
+hist(rowSums(as.data.frame(mirin[["RNA"]]@data)),
+     breaks = 100, main = "MIRIN: Expression sum by Feature",
+     xlab = "Sum Expression")
+hist(colSums(as.data.frame(mirin[["RNA"]]@data)),
+     breaks = 100, main = "MIRIN: Expression sum by Cell",
+     xlab = "Sum Expression")
+```
+
+---
+
+```{r}
+# Remove unwanted cells from the dataset to decrease noise after normalization (adjusted based on normalization below)
+###DMSO1 & MIRIN are bimodal
+dmso1 <- subset(x = dmso1, subset = nFeature_RNA > 300 & nFeature_RNA < 6000)
+dmso4 <- subset(x = dmso4, subset = nFeature_RNA > 300 & nFeature_RNA < 6000)
+ly <- subset(x = ly, subset = nFeature_RNA > 300 & nFeature_RNA < 6000)
+mirin <- subset(x = mirin, subset = nFeature_RNA > 300 & nFeature_RNA < 6000)
+```
+
+---
+
+```{r}
+### Do normalization on subsetted matrix - using Log Normalization
+# Alter subset to increase normal distribution
+### Normalize each gene expression matrix 
+
+# DMSO1 Log Normalization
+dmso1_norm <- NormalizeData(dmso1, assay = NULL, normalization.method = "LogNormalize", 
+                         scale.factor = 10000)
+hist(rowSums(as.data.frame(dmso1_norm[["RNA"]]@data)),
+     breaks = 100, main = "DMSO1 Subset Log Normalized: Expression sum by Feature",
+     xlab = "Sum Expression")
+hist(colSums(as.data.frame(dmso1_norm[["RNA"]]@data)),
+     breaks = 100, main = "DMSO1 Subset Log Normalized: Expression sum by Cell",
+     xlab = "Sum Expression")
+# DMSO4 Log Normalization
+dmso4_norm <- NormalizeData(dmso4, assay = NULL, normalization.method = "LogNormalize", 
+                         scale.factor = 10000)
+hist(rowSums(as.data.frame(dmso4_norm[["RNA"]]@data)),
+     breaks = 100, main = "DMSO4 Subset Log Normalized: Expression sum by Feature",
+     xlab = "Sum Expression")
+hist(colSums(as.data.frame(dmso4_norm[["RNA"]]@data)),
+     breaks = 100, main = "DMSO4 Subset Log Normalized: Expression sum by Cell",
+     xlab = "Sum Expression")
+# LY Log Normalization
+ly_norm <- NormalizeData(ly, assay = NULL, normalization.method = "LogNormalize", 
+                         scale.factor = 10000)
+hist(rowSums(as.data.frame(ly_norm[["RNA"]]@data)),
+     breaks = 100, main = "LY Subset Log Normalized: Expression sum by Feature",
+     xlab = "Sum Expression")
+hist(colSums(as.data.frame(ly_norm[["RNA"]]@data)),
+     breaks = 100, main = "LY Subset Log Normalized: Expression sum by Cell",
+     xlab = "Sum Expression")
+# MIRIN Log Normalization
+mirin_norm <- NormalizeData(mirin, assay = NULL, normalization.method = "LogNormalize", 
+                         scale.factor = 10000)
+hist(rowSums(as.data.frame(mirin_norm[["RNA"]]@data)),
+     breaks = 100, main = "MIRIN Subset Log Normalized: Expression sum by Feature",
+     xlab = "Sum Expression")
+hist(colSums(as.data.frame(mirin_norm[["RNA"]]@data)),
+     breaks = 100, main = "MIRIN Subset Log Normalized: Expression sum by Cell",
+     xlab = "Sum Expression")
+```
+
+---
+
+```{r}
+### Feature Selection
+# Identify the most highly variable features
+dmso1 <- FindVariableFeatures(object = dmso1_norm, selection.method = "vst", nfeatures = 2000)
+dmso4 <- FindVariableFeatures(object = dmso4_norm, selection.method = "vst", nfeatures = 2000)
+ly <- FindVariableFeatures(object = ly_norm, selection.method = "vst", nfeatures = 2000)
+mirin <- FindVariableFeatures(object = mirin_norm, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+dmso1_top10 <- head(x = VariableFeatures(object = dmso1), 10)
+dmso4_top10 <- head(x = VariableFeatures(object = dmso4), 10)
+ly_top10 <- head(x = VariableFeatures(object = ly), 10)
+mirin_top10 <- head(x = VariableFeatures(object = mirin), 10)
+
+# Plot variable features with labels
+dmso1_feat_plot <- LabelPoints(plot = VariableFeaturePlot(object = dmso1, 
+                                                       cols = c("black", "lightblue")), 
+                            points = dmso1_top10, repel = TRUE)
+dmso4_feat_plot <- LabelPoints(plot = VariableFeaturePlot(object = dmso4, 
+                                                        cols = c("black", "pink")), 
+                            points = dmso4_top10, repel = TRUE)
+ly_feat_plot <- LabelPoints(plot = VariableFeaturePlot(object = ly, 
+                                                         cols = c("black", "darkgoldenrod1")), 
+                            points = ly_top10, repel = TRUE)
+mirin_feat_plot <- LabelPoints(plot = VariableFeaturePlot(object = mirin, 
+                                                         cols = c("black", "lightgreen")), 
+                            points = mirin_top10, repel = TRUE)
+dmso1_feat_plot #14202 non-variable, 2000 variable
+dmso4_feat_plot #14485 non-variable, 2000 variable 
+ly_feat_plot #13774 non-variable, 2000 variable
+mirin_feat_plot #14277 non-variable, 2000 variable
+```
+
+---
+
+```{r}
+# Integrate the four datasets 
+# Identify anchors to integrate the 4 datasets 
+stage_anchors <- FindIntegrationAnchors(object.list = list(dmso1, dmso4, ly, mirin), dims = 1:50)
+stage_combined <- IntegrateData(anchorset = stage_anchors, dims = 1:50)
+# Label integrated assay
+DefaultAssay(object = stage_combined) <- "integrated"
+```
+
+---
+
+```{r}
+# Run the standard workflow for visualization and clustering
+## Scaling
+stage_combined <- ScaleData(object = stage_combined, verbose = FALSE)
+## Calculate PCA dimensional reduction, return 50 PCs
+stage_combined <- RunPCA(object = stage_combined, npcs = 50, verbose = FALSE)
+```
+
+```{r}
+# Determining the Dimensionality
+
+## How many PCs are optimal? 
+# Elbow Plot
+ElbowPlot(object = stage_combined) # deep elbow drop at 6, with tapering until 14-15
+```
+
+---
+
+```{r}
+stage_2 <- stage_combined #save as new object in case (can go back without starting over)
+set.seed(1234)
+# t-SNE and Clustering
+##original dims set to 15 after running PCA, reduced to 10 following further analysis due to clustering of cell types
+stage_2 <- RunTSNE(object = stage_2, reduction = "pca", dims = 1:10) # was 15
+stage_2 <- RunUMAP(object = stage_2, reduction = "pca", dims = 1:10) # was 15
+stage_2 <- FindNeighbors(object = stage_2, reduction = "pca", dims = 1:10) # was 15
+```
+
+```{r}
+stage_3 <- FindClusters(stage_2, resolution = 0.31) # was 0.5 (decreasing this decreases number of clusters - wanted to reduce clusters as results were better with 10 vs. more)
+head(x = Idents(object = stage_3), 15)
+```
+
+
+```{r}
+# Save object (prevents re-run of all previous steps)
+saveRDS(stage_3, file = "./stage_final.rds")
+```
+
+```{r}
+# Read in object
+stage_combined1 <- readRDS(file = "./stage_final.rds")
+head(Idents(stage_combined1))
+```
+
+---
+
+```{r}
+# Visualizations
+# PCA
+pca_1 <- DimPlot(object = stage_combined1, reduction = "pca", group.by = "stage")
+pca_2 <- DimPlot(object = stage_combined1, reduction = "pca", label = TRUE)
+pca_3 <- DimPlot(object = stage_combined1, reduction = "pca", split.by = "stage")
+pca_1
+pca_2
+pca_3
+# TSNE
+tsne_1 <- DimPlot(object = stage_combined1, reduction = "tsne", group.by = "stage")
+tsne_2 <- DimPlot(object = stage_combined1, reduction = "tsne", label = TRUE)
+tsne_3 <- DimPlot(object = stage_combined1, reduction = "tsne", split.by = "stage") 
+tsne_1
+tsne_2
+tsne_3
+# UMAP
+umap_1 <- DimPlot(object = stage_combined1, reduction = "umap", group.by = "stage")
+umap_2 <- DimPlot(object = stage_combined1, reduction = "umap", label = TRUE)
+umap_3 <- DimPlot(object = stage_combined1, reduction = "umap", split.by = "stage")
+umap_1
+umap_2
+umap_3
+```
+
+```{r}
+# Save TSNE plots
+png("tsne_final.png", units="in", width=8, height=5, res=600)
+tsne_2
+dev.off()
+png("tsne_final_stage.png", units="in", width=8, height=5, res=600)
+tsne_3
+dev.off()
+```
+---
+
+https://learn.gencore.bio.nyu.edu/single-cell-rnaseq/seurat-part-4-cell-clustering/
+
+Compare genes in groups that are visually by each other in tsne 
+
+---
+
+
+```{r}
+# Find markers for each cluster
+# Only positive markers 
+clust_markers <- FindAllMarkers(object = stage_combined1, only.pos = TRUE)
+clust_markers
+clust_markers_10 <- clust_markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+clust_markers_10
+write.table(clust_markers_10, file = "top10_cluster_markers_try2.tsv", sep = "\t", quote = FALSE)
+```
+
+---
+
+
+```{r}
+# Find cell markers 
+DefaultAssay(object = stage_combined1) <- "RNA"
+
+cluster9 <- FindMarkers(stage_combined1, ident.1 = 9, grouping.var = "stage", min.pct = 0.25)
+#head(cluster9, n = 5)
+
+cluster3 <- FindMarkers(stage_combined1, ident.1 = 3, grouping.var = "stage", min.pct = 0.25)
+#head(cluster3, n = 5)
+
+cluster7 <- FindMarkers(stage_combined1, ident.1 = 7, grouping.var = "stage", min.pct = 0.25)
+#head(cluster7, n = 5)
+```
+
+```{r}
+# Visualize Markers
+# Neurons
+FeaturePlot(object = stage_combined1, 
+            features = c("Tubb3", "Gng2", "Prph","Vgf","Npy"),
+            min.cutoff = "q9")
+FeaturePlot(object = stage_combined1, 
+            features = c("Serp2", "Ccdc92", "Ctxn1", "Atp6v1a"),
+            min.cutoff = "q9")
+FeaturePlot(object = stage_combined1, 
+            features = c("Npy"),
+            min.cutoff = "q9")
+# Schwann Cells
+FeaturePlot(object = stage_combined1, 
+            features = c("S100b", "Sox10"), 
+            min.cutoff = "q9")
+# Satellite Cells
+FeaturePlot(object = stage_combined1, 
+            features = c("Sparc", "Igfbp7", "Col3a1"), 
+            min.cutoff = "q9")
+# Cell Stress is uniform but upregulated in cluster 1 - remove high levels of Ddit3 and Ppp1r15a?
+FeaturePlot(object = stage_combined1, 
+            features = c("Ddit3", "Ppp1r15a"), 
+            min.cutoff = "q9")
+# Macrophage - cluster 8
+FeaturePlot(object = stage_combined1, 
+            features = c("Cd68", "Cd53"), 
+            min.cutoff = "q9")
+## ALL
+all_features <- FeaturePlot(object = stage_combined1,
+                            features = c("Tubb3", "Gng2", "Prph","Vgf","Npy",
+                                         "S100b", "Sox10",
+                                         "Sparc", "Igfbp7", "Col3a1",
+                                         "Cd68", "Cd53", "Ddit3", "Ppp1r15a"),
+                            min.cutoff = "q9",
+                            label.size = 2,
+                            combine = FALSE,
+                            reduction = "tsne",
+                            cols = c("gray85", "red2")) 
+for(i in 1:length(all_features)) {
+  all_features[[i]] <- all_features[[i]] + NoLegend() + NoAxes()
+}
+# Save plot
+png("tsne_expression_markers_10clust.png", units="in", width=8, height=5, res=600)
+cowplot::plot_grid(plotlist = all_features)
+dev.off()
+```
+
+```{r}
+# Important Markers:
+### Neurons
+# Tubb3
+# Gng2
+# Prph
+# Vgf
+# Npy
+# Ret
+### Schwann Cells
+# S100b
+# Sox10
+# Vim
+### Satellite Cells
+# Sparc
+# Igfbp7
+# Col3a1
+### Macrophages
+# Cd68
+# Cd53
+### Cell Stress Indicators 
+# Ddit3
+# Ppp1r15a
+```
+
+---
+
+```{r}
+# Remove cells under cell stress (cluster 9)
+#stage_combined1 <- SubsetData(stage_combined1, ident.remove = 1)
+```
+
+---
+
+```{r}
+# Create expression plots for cell markers 
+VlnPlot(object = stage_combined1, features = c("Tubb3", "Gng2", "Prph"), pt.size = 0.001)
+VlnPlot(object = stage_combined1, features = c("Vgf","Npy"), pt.size = 0.01)
+VlnPlot(object = stage_combined1, features = c("S100b", "Sox10"), pt.size = 0.01)
+VlnPlot(object = stage_combined1, features = c("Sparc", "Igfbp7", "Col3a1"), pt.size = 0.01)
+VlnPlot(object = stage_combined1, features = c("Cd68", "Cd53"), pt.size = 0.01)
+VlnPlot(object = stage_combined1, features = c("Ddit3", "Ppp1r15a"), pt.size = 0.01)
+```
+
+```{r}
+# Rename clusters
+stage_rename <- RenameIdents(object = stage_combined1, 
+                               `0` = "NPY+ Neuron", 
+                               `3` = "NPY- Neuron", 
+                               `6` = "Satellite", 
+                               `8` = "Macrophage", 
+                               `4` = "Satellite", 
+                               `2` = "NPY- Neuron", 
+                               `5` = "NPY+ Neuron",
+                               `9` = "NPY+ Neuron",
+                               `10` = "Schwann", 
+                               `7` = "NPY- Neuron",
+                               `1` = "Stress+ Neuron")
+# Plots
+tsne_cell_1 <- DimPlot(object = stage_rename, reduction = "tsne", label = TRUE)
+tsne_cell_2 <- DimPlot(object = stage_rename, reduction = "tsne", split.by = "stage",
+                       cols = c("#FFAD0A", "#54BCD1","#FF8C8D", "#A6E000" , "#0076BB", "#C70E7B"))
+umap_cell_1 <- DimPlot(object = stage_rename, reduction = "umap", label = TRUE,
+                       cols = c("#FFAD0A", "#54BCD1","#FF8C8D", "#A6E000" , "#0076BB", "#C70E7B"))
+umap_cell_2 <- DimPlot(object = stage_rename, reduction = "umap", split.by = "stage",
+                       cols = c("#FFAD0A", "#54BCD1","#FF8C8D", "#A6E000" , "#0076BB", "#C70E7B"))
+tsne_cell_1
+umap_cell_1
+tsne_cell_2
+umap_cell_2
+```
+
+---
+
+Differential Expression
+
+```{r}
+# Save object (prevents re-run of all previous steps)
+saveRDS(stage_rename, file = "./stage_rename.rds")
+```
+
+```{r}
+# Read in object
+stage_rename <- readRDS(file = "./stage_rename.rds")
+head(Idents(stage_rename))
+```
+
+---
+
+```{r}
+# View cell markers across conditions
+plot_markers <- c("Tubb3", "Gng2", "Prph","Vgf","Npy",
+                  "Serp2", "Ccdc92", "Ctxn1", "Ret",
+                  "S100b", "Sox10",
+                  "Sparc", "Igfbp7", "Col3a1",
+                  "Cd68", "Cd53", 
+                  "Ddit3", "Ppp1r15a")
+DotPlot(object = stage_rename, features = plot_markers, 
+        cols = c("#007BC3", "#D72000","#F7AA14", "#009F3F"),
+        split.by = "stage", dot.min = 0.2, dot.scale = 5) + RotatedAxis()
+```
+
+```{r}
+# Identify differential expression across conditions
+
+##NPY+
+neuron_npy_pos_cells <- subset(x = stage_rename, idents = "NPY+ Neuron")
+Idents(object = neuron_npy_pos_cells) <- "stage"
+avg_neuron_npy_pos_cells <- log1p(x = AverageExpression(object = neuron_npy_pos_cells, verbose = FALSE)$RNA)
+avg_neuron_npy_pos_cells <- data.frame(avg_neuron_npy_pos_cells)
+avg_neuron_npy_pos_cells$gene <- rownames(x = avg_neuron_npy_pos_cells)
+
+##NPY-
+neuron_npy_neg_cells <- subset(x = stage_rename, idents = "NPY- Neuron")
+Idents(object = neuron_npy_neg_cells) <- "stage"
+avg_neuron_npy_neg_cells <- log1p(x = AverageExpression(object = neuron_npy_neg_cells, verbose = FALSE)$RNA)
+avg_neuron_npy_neg_cells <- data.frame(avg_neuron_npy_neg_cells)
+avg_neuron_npy_neg_cells$gene <- rownames(x = avg_neuron_npy_neg_cells)
+
+##SATELLITE
+satellite_cells <- subset(x = stage_rename, idents = "Satellite")
+Idents(object = satellite_cells) <- "stage"
+avg_satellite_cells <- log1p(x = AverageExpression(object = satellite_cells, verbose = FALSE)$RNA)
+avg_satellite_cells <- data.frame(avg_satellite_cells)
+avg_satellite_cells$gene <- rownames(x = avg_satellite_cells)
+
+##SCHWANN
+schwann_cells <- subset(x = stage_rename, idents = "Schwann")
+Idents(object = schwann_cells) <- "stage"
+avg_schwann_cells <- log1p(x = AverageExpression(object = schwann_cells, verbose = FALSE)$RNA)
+avg_schwann_cells <- data.frame(avg_schwann_cells)
+avg_schwann_cells$gene <- rownames(x = avg_schwann_cells)
+
+##MACROPHAGE
+macro_cells <- subset(x = stage_rename, idents = "Macrophage")
+Idents(object = macro_cells) <- "stage"
+avg_macro_cells <- log1p(x = AverageExpression(object = macro_cells, verbose = FALSE)$RNA)
+avg_macro_cells <- data.frame(avg_macro_cells)
+avg_macro_cells$gene <- rownames(x = avg_macro_cells)
+
+##STRESS
+stress_cells <- subset(x = stage_rename, idents = "Stress+ Neuron")
+Idents(object = stress_cells) <- "stage"
+avg_stress_cells <- log1p(x = AverageExpression(object = stress_cells, verbose = FALSE)$RNA)
+avg_stress_cells <- data.frame(avg_stress_cells)
+avg_stress_cells$gene <- rownames(x = avg_stress_cells)
+```
+
+```{r}
+# Plot DMSO1 to LY
+diff_dmso1_ly_neuron_npy_pos <- ggplot(avg_neuron_npy_pos_cells, aes(DMSO1, LY)) + geom_point(color='lightblue') + ggtitle("NPY+ Neurons")
+diff_dmso1_ly_neuron_npy_pos <- LabelPoints(plot = diff_dmso1_ly_neuron_npy_pos, points = plot_markers, repel = TRUE)
+
+diff_dmso1_ly_neuron_npy_neg <- ggplot(avg_neuron_npy_neg_cells, aes(DMSO1, LY)) + geom_point(color='lightblue') + ggtitle("NPY- Neurons")
+diff_dmso1_ly_neuron_npy_neg <- LabelPoints(plot = diff_dmso1_ly_neuron_npy_neg, points = plot_markers, repel = TRUE)
+
+diff_dmso1_ly_satellite <- ggplot(avg_satellite_cells, aes(DMSO1, LY)) + geom_point(color='lightblue') + ggtitle("Satellite Cells")
+diff_dmso1_ly_satellite <- LabelPoints(plot = diff_dmso1_ly_satellite, points = plot_markers, repel = TRUE)
+
+diff_dmso1_ly_schwann <- ggplot(avg_schwann_cells, aes(DMSO1, LY)) + geom_point(color='lightblue') + ggtitle("Schwann Cells")
+diff_dmso1_ly_schwann <- LabelPoints(plot = diff_dmso1_ly_schwann, points = plot_markers, repel = TRUE)
+
+diff_dmso1_ly_macro <- ggplot(avg_macro_cells, aes(DMSO1, LY)) + geom_point(color='lightblue') + ggtitle("Macrophages")
+diff_dmso1_ly_macro <- LabelPoints(plot = diff_dmso1_ly_macro, points = plot_markers, repel = TRUE)
+
+diff_dmso1_ly_stress <- ggplot(avg_stress_cells, aes(DMSO1, LY)) + geom_point(color='lightblue') + ggtitle("Stress+ Neurons")
+diff_dmso1_ly_stress <- LabelPoints(plot =diff_dmso1_ly_stress, points = plot_markers, repel = TRUE)
+
+diff_dmso1_ly_neuron_npy_pos
+diff_dmso1_ly_neuron_npy_neg
+diff_dmso1_ly_satellite
+diff_dmso1_ly_schwann
+diff_dmso1_ly_macro
+diff_dmso1_ly_stress
+```
+
+```{r}
+# Plot DMSO4 to LY
+diff_dmso4_ly_neuron_npy_pos <- ggplot(avg_neuron_npy_pos_cells, aes(DMSO4, LY)) + geom_point(color='lightblue') + ggtitle("NPY+ Neurons")
+diff_dmso4_ly_neuron_npy_pos <- LabelPoints(plot = diff_dmso4_ly_neuron_npy_pos, points = plot_markers, repel = TRUE)
+
+diff_dmso4_ly_neuron_npy_neg <- ggplot(avg_neuron_npy_neg_cells, aes(DMSO4, LY)) + geom_point(color='lightblue') + ggtitle("NPY- Neurons")
+diff_dmso4_ly_neuron_npy_neg <- LabelPoints(plot = diff_dmso4_ly_neuron_npy_neg, points = plot_markers, repel = TRUE)
+
+diff_dmso4_ly_satellite <- ggplot(avg_satellite_cells, aes(DMSO4, LY)) + geom_point(color='lightblue') + ggtitle("Satellite Cells")
+diff_dmso4_ly_satellite <- LabelPoints(plot = diff_dmso4_ly_satellite, points = plot_markers, repel = TRUE)
+
+diff_dmso4_ly_schwann <- ggplot(avg_schwann_cells, aes(DMSO4, LY)) + geom_point(color='lightblue') + ggtitle("Schwann Cells")
+diff_dmso4_ly_schwann <- LabelPoints(plot = diff_dmso4_ly_schwann, points = plot_markers, repel = TRUE)
+
+diff_dmso4_ly_macro <- ggplot(avg_macro_cells, aes(DMSO4, LY)) + geom_point(color='lightblue') + ggtitle("Macrophages")
+diff_dmso4_ly_macro <- LabelPoints(plot = diff_dmso4_ly_macro, points = plot_markers, repel = TRUE)
+
+diff_dmso4_ly_stress <- ggplot(avg_stress_cells, aes(DMSO4, LY)) + geom_point(color='lightblue') + ggtitle("Stress+ Neurons")
+diff_dmso4_ly_stress <- LabelPoints(plot =diff_dmso4_ly_stress, points = plot_markers, repel = TRUE)
+
+diff_dmso4_ly_neuron_npy_pos
+diff_dmso4_ly_neuron_npy_neg
+diff_dmso4_ly_satellite
+diff_dmso4_ly_schwann
+diff_dmso4_ly_macro
+diff_dmso4_ly_stress
+```
+
+```{r}
+# Plot DMSO1 to MIRIN
+diff_dmso1_mirin_neuron_npy_pos <- ggplot(avg_neuron_npy_pos_cells, aes(DMSO1, MIRIN)) + geom_point(color='lightblue') + ggtitle("NPY+ Neurons")
+diff_dmso1_mirin_neuron_npy_pos <- LabelPoints(plot = diff_dmso1_mirin_neuron_npy_pos, points = plot_markers, repel = TRUE)
+
+diff_dmso1_mirin_neuron_npy_neg <- ggplot(avg_neuron_npy_neg_cells, aes(DMSO1, MIRIN)) + geom_point(color='lightblue') + ggtitle("NPY- Neurons")
+diff_dmso1_mirin_neuron_npy_neg <- LabelPoints(plot = diff_dmso1_mirin_neuron_npy_neg, points = plot_markers, repel = TRUE)
+
+diff_dmso1_mirin_satellite <- ggplot(avg_satellite_cells, aes(DMSO1, MIRIN)) + geom_point(color='lightblue') + ggtitle("Satellite Cells")
+diff_dmso1_mirin_satellite <- LabelPoints(plot = diff_dmso1_mirin_satellite, points = plot_markers, repel = TRUE)
+
+diff_dmso1_mirin_schwann <- ggplot(avg_schwann_cells, aes(DMSO1, MIRIN)) + geom_point(color='lightblue') + ggtitle("Schwann Cells")
+diff_dmso1_mirin_schwann <- LabelPoints(plot = diff_dmso1_mirin_schwann, points = plot_markers, repel = TRUE)
+
+diff_dmso1_mirin_macro <- ggplot(avg_macro_cells, aes(DMSO1, MIRIN)) + geom_point(color='lightblue') + ggtitle("Macrophages")
+diff_dmso1_mirin_macro <- LabelPoints(plot = diff_dmso1_mirin_macro, points = plot_markers, repel = TRUE)
+
+diff_dmso1_mirin_stress <- ggplot(avg_stress_cells, aes(DMSO1, MIRIN)) + geom_point(color='lightblue') + ggtitle("Stress+ Neurons")
+diff_dmso1_mirin_stress <- LabelPoints(plot =diff_dmso1_mirin_stress, points = plot_markers, repel = TRUE)
+
+diff_dmso1_mirin_neuron_npy_pos
+diff_dmso1_mirin_neuron_npy_neg
+diff_dmso1_mirin_satellite
+diff_dmso1_mirin_schwann
+diff_dmso1_mirin_macro
+diff_dmso1_mirin_stress
+```
+
+```{r}
+# Plot DMSO4 to MIRIN
+diff_dmso4_mirin_neuron_npy_pos <- ggplot(avg_neuron_npy_pos_cells, aes(DMSO4, MIRIN)) + geom_point(color='lightblue') + ggtitle("NPY+ Neurons")
+diff_dmso4_mirin_neuron_npy_pos <- LabelPoints(plot = diff_dmso4_mirin_neuron_npy_pos, points = plot_markers, repel = TRUE)
+
+diff_dmso4_mirin_neuron_npy_neg <- ggplot(avg_neuron_npy_neg_cells, aes(DMSO4, MIRIN)) + geom_point(color='lightblue') + ggtitle("NPY- Neurons")
+diff_dmso4_mirin_neuron_npy_neg <- LabelPoints(plot = diff_dmso4_mirin_neuron_npy_neg, points = plot_markers, repel = TRUE)
+
+diff_dmso4_mirin_satellite <- ggplot(avg_satellite_cells, aes(DMSO4, MIRIN)) + geom_point(color='lightblue') + ggtitle("Satellite Cells")
+diff_dmso4_mirin_satellite <- LabelPoints(plot = diff_dmso4_mirin_satellite, points = plot_markers, repel = TRUE)
+
+diff_dmso4_mirin_schwann <- ggplot(avg_schwann_cells, aes(DMSO4, MIRIN)) + geom_point(color='lightblue') + ggtitle("Schwann Cells")
+diff_dmso4_mirin_schwann <- LabelPoints(plot = diff_dmso4_mirin_schwann, points = plot_markers, repel = TRUE)
+
+diff_dmso4_mirin_macro <- ggplot(avg_macro_cells, aes(DMSO4, MIRIN)) + geom_point(color='lightblue') + ggtitle("Macrophages")
+diff_dmso4_mirin_macro <- LabelPoints(plot = diff_dmso4_mirin_macro, points = plot_markers, repel = TRUE)
+
+diff_dmso4_mirin_stress <- ggplot(avg_stress_cells, aes(DMSO4, MIRIN)) + geom_point(color='lightblue') + ggtitle("Stress+ Neurons")
+diff_dmso4_mirin_stress <- LabelPoints(plot =diff_dmso4_mirin_stress, points = plot_markers, repel = TRUE)
+
+diff_dmso4_mirin_neuron_npy_pos
+diff_dmso4_mirin_neuron_npy_neg
+diff_dmso4_mirin_satellite
+diff_dmso4_mirin_schwann
+diff_dmso4_mirin_macro
+diff_dmso4_mirin_stress
+```
+
+---
+
+Differential Expression Testing
+https://satijalab.org/seurat/v3.0/de_vignette.html 
+
+Notes:
+- T-test assumes normal distribution
+- Wilcox doesn't need normal distribution - alternative to t-test 
+- ROC will calculate sensitivity and specificity 
+
+---
+
+```{r}
+stage_de <- stage_rename
+stage_de$celltype_stage <- paste(Idents(object = stage_de), stage_de$stage, sep = "_")
+stage_de$celltype <- Idents(object = stage_de)
+Idents(stage_de) <- "celltype_stage"
+#Idents(stage_combined)
+```
+
+```{r}
+# Neurons: Find differences between DMSO1 and LY
+neuron_npy_pos_dmso1_ly_markers <- FindMarkers(object = stage_de, ident.1 = "NPY+ Neuron_LY", 
+                                             ident.2 = "NPY+ Neuron_DMSO1",
+                                             verbose = FALSE, 
+                                             logfc.threshold = log(2),
+                                             test.use = "wilcox")
+setDT(neuron_npy_pos_dmso1_ly_markers, keep.rownames = TRUE)[]
+colnames(neuron_npy_pos_dmso1_ly_markers)[1] <- c("gene")
+neuron_npy_pos_dmso1_ly_markers <- filter(neuron_npy_pos_dmso1_ly_markers, p_val_adj <= 0.01) #reduced from 1095 to 496 (p_val_adj only) to 112 (adding log2)
+
+# NPY-
+neuron_npy_neg_dmso1_ly_markers <- FindMarkers(object = stage_de, 
+                                             ident.1 = "NPY- Neuron_LY", 
+                                             ident.2 = "NPY- Neuron_DMSO1",
+                                             verbose = FALSE,
+                                             logfc.threshold = log(2),
+                                             test.use = "wilcox")
+setDT(neuron_npy_neg_dmso1_ly_markers, keep.rownames = TRUE)[]
+colnames(neuron_npy_neg_dmso1_ly_markers)[1] <- c("gene")
+neuron_npy_neg_dmso1_ly_markers <- filter(neuron_npy_neg_dmso1_ly_markers, p_val_adj <= 0.01) #reduced from 1310 to 137
+
+# Satellite
+satellite_dmso1_ly_markers <- FindMarkers(object = stage_de, 
+                                        ident.1 = "Satellite_LY", 
+                                        ident.2 = "Satellite_DMSO1",
+                                        verbose = FALSE,
+                                        logfc.threshold = log(2),
+                                        test.use = "wilcox")
+setDT(satellite_dmso1_ly_markers, keep.rownames = TRUE)[]
+colnames(satellite_dmso1_ly_markers)[1] <- c("gene")
+satellite_dmso1_ly_markers <- filter(satellite_dmso1_ly_markers, p_val_adj <= 0.01) #reduced from 1206 to 128
+
+# Schwann
+schwann_dmso1_ly_markers <- FindMarkers(object = stage_de, 
+                                      ident.1 = "Schwann_LY", 
+                                      ident.2 = "Schwann_DMSO1",
+                                      verbose = FALSE,
+                                      logfc.threshold = log(2),
+                                      test.use = "wilcox")
+setDT(schwann_dmso1_ly_markers, keep.rownames = TRUE)[]
+colnames(schwann_dmso1_ly_markers)[1] <- c("gene")
+schwann_dmso1_ly_markers <- filter(schwann_dmso1_ly_markers, p_val_adj <= 0.01) #reduced from 1636 to 110
+
+# Macrophage
+macro_dmso1_ly_markers <- FindMarkers(object = stage_de, 
+                                    ident.1 = "Macrophage_LY", 
+                                    ident.2 = "Macrophage_DMSO1",
+                                    verbose = FALSE,
+                                    logfc.threshold = log(2),
+                                    test.use = "wilcox")
+setDT(macro_dmso1_ly_markers, keep.rownames = TRUE)[]
+colnames(macro_dmso1_ly_markers)[1] <- c("gene")
+macro_dmso1_ly_markers <- filter(macro_dmso1_ly_markers, p_val_adj <= 0.01)
+#reduced from 1631 to 51
+
+# Stress Cells
+stress_dmso1_ly_markers <- FindMarkers(object = stage_de, 
+                                     ident.1 = "Stress+ Neuron_LY", 
+                                     ident.2 = "Stress+ Neuron_DMSO1",
+                                     verbose = FALSE,
+                                     logfc.threshold = log(2),
+                                     test.use = "wilcox")
+setDT(stress_dmso1_ly_markers, keep.rownames = TRUE)[]
+colnames(stress_dmso1_ly_markers)[1] <- c("gene")
+stress_dmso1_ly_markers <- filter(stress_dmso1_ly_markers, p_val_adj <= 0.01)
+#reduced from 766 to 69
+
+neuron_npy_pos_dmso1_ly_markers
+satellite_dmso1_ly_markers
+schwann_dmso1_ly_markers
+macro_dmso1_ly_markers
+stress_dmso1_ly_markers
+```
+
+```{r}
+# Neurons: Find differences between DMSO1 and MIRIN
+neuron_npy_pos_dmso1_mirin_markers <- FindMarkers(object = stage_de, ident.1 = "NPY+ Neuron_MIRIN", 
+                                             ident.2 = "NPY+ Neuron_DMSO1",
+                                             verbose = FALSE,
+                                             logfc.threshold = log(2),
+                                             test.use = "wilcox")
+setDT(neuron_npy_pos_dmso1_mirin_markers, keep.rownames = TRUE)[]
+colnames(neuron_npy_pos_dmso1_mirin_markers)[1] <- c("gene")
+neuron_npy_pos_dmso1_mirin_markers <- filter(neuron_npy_pos_dmso1_mirin_markers, p_val_adj <= 0.01)
+#reduced from 7216 to 282 (once filters were added)
+
+# NPY-
+neuron_npy_neg_dmso1_mirin_markers <- FindMarkers(object = stage_de, 
+                                             ident.1 = "NPY- Neuron_MIRIN", 
+                                             ident.2 = "NPY- Neuron_DMSO1",
+                                             verbose = FALSE, 
+                                             logfc.threshold = log(2),
+                                             test.use = "wilcox")
+setDT(neuron_npy_neg_dmso1_mirin_markers, keep.rownames = TRUE)[]
+colnames(neuron_npy_neg_dmso1_mirin_markers)[1] <- c("gene")
+neuron_npy_neg_dmso1_mirin_markers <- filter(neuron_npy_neg_dmso1_mirin_markers, p_val_adj <= 0.01)
+#reduced from 2164 to 284 (once filters were added)
+
+# Satellite
+satellite_dmso1_mirin_markers <- FindMarkers(object = stage_de, 
+                                        ident.1 = "Satellite_MIRIN", 
+                                        ident.2 = "Satellite_DMSO1",
+                                        verbose = FALSE, 
+                                        logfc.threshold = log(2),
+                                        test.use = "wilcox")
+setDT(satellite_dmso1_mirin_markers, keep.rownames = TRUE)[]
+colnames(satellite_dmso1_mirin_markers)[1] <- c("gene")
+satellite_dmso1_mirin_markers <- filter(satellite_dmso1_mirin_markers, p_val_adj <= 0.01)
+#reduced from 1717 to 284 (once filters were added)
+
+# Schwann
+schwann_dmso1_mirin_markers <- FindMarkers(object = stage_de, 
+                                      ident.1 = "Schwann_MIRIN", 
+                                      ident.2 = "Schwann_DMSO1",
+                                      verbose = FALSE,
+                                      logfc.threshold = log(2),
+                                      test.use = "wilcox")
+setDT(schwann_dmso1_mirin_markers, keep.rownames = TRUE)[]
+colnames(schwann_dmso1_mirin_markers)[1] <- c("gene")
+schwann_dmso1_mirin_markers <- filter(schwann_dmso1_mirin_markers, p_val_adj <= 0.01)
+#reduced from 3638 to 905 (once filters were added)
+
+# Macrophage
+macro_dmso1_mirin_markers <- FindMarkers(object = stage_de, 
+                                    ident.1 = "Macrophage_MIRIN", 
+                                    ident.2 = "Macrophage_DMSO1",
+                                    verbose = FALSE, 
+                                    logfc.threshold = log(2),
+                                    test.use = "wilcox")
+setDT(macro_dmso1_mirin_markers, keep.rownames = TRUE)[]
+colnames(macro_dmso1_mirin_markers)[1] <- c("gene")
+macro_dmso1_mirin_markers <- filter(macro_dmso1_mirin_markers, p_val_adj <= 0.01)
+#reduced from 2315 to 382 (once filters were added)
+
+# Stress Cells
+stress_dmso1_mirin_markers <- FindMarkers(object = stage_de, 
+                                     ident.1 = "Stress+ Neuron_MIRIN", 
+                                     ident.2 = "Stress+ Neuron_DMSO1",
+                                     verbose = FALSE, 
+                                     logfc.threshold = log(2),
+                                     test.use = "wilcox")
+setDT(stress_dmso1_mirin_markers, keep.rownames = TRUE)[]
+colnames(stress_dmso1_mirin_markers)[1] <- c("gene")
+stress_dmso1_mirin_markers <- filter(stress_dmso1_mirin_markers, p_val_adj <= 0.01)
+#reduced from 1820 to 222 (once filters were added)
+
+neuron_npy_pos_dmso1_mirin_markers
+satellite_dmso1_mirin_markers
+schwann_dmso1_mirin_markers
+macro_dmso1_mirin_markers
+stress_dmso1_mirin_markers
+```
+
+```{r}
+# Neurons: Find differences between DMSO4 and LY
+neuron_npy_pos_dmso4_ly_markers <- FindMarkers(object = stage_de, ident.1 = "NPY+ Neuron_LY", 
+                                             ident.2 = "NPY+ Neuron_DMSO4",
+                                             verbose = FALSE,
+                                             logfc.threshold = log(2),
+                                             test.use = "wilcox")
+setDT(neuron_npy_pos_dmso4_ly_markers, keep.rownames = TRUE)[]
+colnames(neuron_npy_pos_dmso4_ly_markers)[1] <- c("gene")
+neuron_npy_pos_dmso4_ly_markers <- filter(neuron_npy_pos_dmso4_ly_markers, p_val_adj <= 0.01)
+#reduced from 695 to 286 (once filters were added)
+
+# NPY-
+neuron_npy_neg_dmso4_ly_markers <- FindMarkers(object = stage_de, 
+                                             ident.1 = "NPY- Neuron_LY", 
+                                             ident.2 = "NPY- Neuron_DMSO4",
+                                             verbose = FALSE,
+                                             logfc.threshold = log(2),
+                                             test.use = "wilcox")
+setDT(neuron_npy_neg_dmso4_ly_markers, keep.rownames = TRUE)[]
+colnames(neuron_npy_neg_dmso4_ly_markers)[1] <- c("gene")
+neuron_npy_neg_dmso4_ly_markers <- filter(neuron_npy_neg_dmso4_ly_markers, p_val_adj <= 0.01)
+#reduced from 286 to 1 (once filters were added)
+
+# Satellite
+satellite_dmso4_ly_markers <- FindMarkers(object = stage_de, 
+                                        ident.1 = "Satellite_LY", 
+                                        ident.2 = "Satellite_DMSO4",
+                                        verbose = FALSE,
+                                        logfc.threshold = log(2),
+                                        test.use = "wilcox")
+setDT(satellite_dmso4_ly_markers, keep.rownames = TRUE)[]
+colnames(satellite_dmso4_ly_markers)[1] <- c("gene")
+satellite_dmso4_ly_markers  <- filter(satellite_dmso4_ly_markers, p_val_adj <= 0.01)
+#reduced from 1201 to 35 (once filters were added)
+
+# Schwann
+schwann_dmso4_ly_markers <- FindMarkers(object = stage_de, 
+                                      ident.1 = "Schwann_LY", 
+                                      ident.2 = "Schwann_DMSO4",
+                                      verbose = FALSE,
+                                      logfc.threshold = log(2),
+                                      test.use = "wilcox")
+setDT(schwann_dmso4_ly_markers, keep.rownames = TRUE)[]
+colnames(schwann_dmso4_ly_markers)[1] <- c("gene")
+schwann_dmso4_ly_markers <- filter(schwann_dmso4_ly_markers, p_val_adj <= 0.01)
+#reduced from 1046 to 20 (once filters were added)
+
+# Macrophage
+macro_dmso4_ly_markers <- FindMarkers(object = stage_de, 
+                                    ident.1 = "Macrophage_LY", 
+                                    ident.2 = "Macrophage_DMSO4",
+                                    verbose = FALSE, 
+                                    logfc.threshold = log(2),
+                                    test.use = "wilcox")
+setDT(macro_dmso4_ly_markers, keep.rownames = TRUE)[]
+colnames(macro_dmso4_ly_markers)[1] <- c("gene")
+macro_dmso4_ly_markers <- filter(macro_dmso4_ly_markers, p_val_adj <= 0.01)
+#reduced from 2076 to 25 (once filters were added)
+
+# Stress Cells
+stress_dmso4_ly_markers <- FindMarkers(object = stage_de, 
+                                     ident.1 = "Stress+ Neuron_LY", 
+                                     ident.2 = "Stress+ Neuron_DMSO4",
+                                     verbose = FALSE,
+                                     logfc.threshold = log(2),
+                                     test.use = "wilcox")
+setDT(stress_dmso4_ly_markers, keep.rownames = TRUE)[]
+colnames(stress_dmso4_ly_markers)[1] <- c("gene")
+stress_dmso4_ly_markers <- filter(stress_dmso4_ly_markers, p_val_adj <= 0.01)
+#reduced to 11 (once filters were added)
+
+neuron_npy_pos_dmso4_ly_markers
+satellite_dmso4_ly_markers
+schwann_dmso4_ly_markers
+macro_dmso4_ly_markers
+stress_dmso4_ly_markers
+```
+
+```{r}
+# Neurons: Find differences between DMSO4 and MIRIN
+neuron_npy_pos_dmso4_mirin_markers <- FindMarkers(object = stage_de, ident.1 = "NPY+ Neuron_MIRIN", 
+                                             ident.2 = "NPY+ Neuron_DMSO4",
+                                             verbose = FALSE, 
+                                             logfc.threshold = log(2),
+                                             test.use = "wilcox")
+setDT(neuron_npy_pos_dmso4_mirin_markers, keep.rownames = TRUE)[]
+colnames(neuron_npy_pos_dmso4_mirin_markers)[1] <- c("gene")
+neuron_npy_pos_dmso4_mirin_markers <- filter(neuron_npy_pos_dmso4_mirin_markers, p_val_adj <= 0.01)
+#reduced to 160 (once filters were added)
+
+# NPY-
+neuron_npy_neg_dmso4_mirin_markers <- FindMarkers(object = stage_de, 
+                                             ident.1 = "NPY- Neuron_MIRIN", 
+                                             ident.2 = "NPY- Neuron_DMSO4",
+                                             verbose = FALSE,
+                                             logfc.threshold = log(2),
+                                             test.use = "wilcox")
+setDT(neuron_npy_neg_dmso4_mirin_markers, keep.rownames = TRUE)[]
+colnames(neuron_npy_neg_dmso4_mirin_markers)[1] <- c("gene")
+neuron_npy_neg_dmso4_mirin_markers <- filter(neuron_npy_neg_dmso4_mirin_markers, p_val_adj <= 0.01)
+#reduced to 336 (once filters were added)
+
+# Satellite
+satellite_dmso4_mirin_markers <- FindMarkers(object = stage_de, 
+                                        ident.1 = "Satellite_MIRIN", 
+                                        ident.2 = "Satellite_DMSO4",
+                                        verbose = FALSE,
+                                        logfc.threshold = log(2),
+                                        test.use = "wilcox")
+setDT(satellite_dmso4_mirin_markers, keep.rownames = TRUE)[]
+colnames(satellite_dmso4_mirin_markers)[1] <- c("gene")
+satellite_dmso4_mirin_markers <- filter(satellite_dmso4_mirin_markers, p_val_adj <= 0.01)
+#reduced to 155 (once filters were added)
+
+# Schwann
+schwann_dmso4_mirin_markers <- FindMarkers(object = stage_de, 
+                                      ident.1 = "Schwann_MIRIN", 
+                                      ident.2 = "Schwann_DMSO4",
+                                      verbose = FALSE,
+                                      logfc.threshold = log(2),
+                                      test.use = "wilcox")
+setDT(schwann_dmso4_mirin_markers, keep.rownames = TRUE)[]
+colnames(schwann_dmso4_mirin_markers)[1] <- c("gene")
+schwann_dmso4_mirin_markers <- filter(schwann_dmso4_mirin_markers, p_val_adj <= 0.01)
+#reduced 1058 to 840 (once filters were added)
+
+# Macrophage
+macro_dmso4_mirin_markers <- FindMarkers(object = stage_de, 
+                                    ident.1 = "Macrophage_MIRIN", 
+                                    ident.2 = "Macrophage_DMSO4",
+                                    verbose = FALSE,
+                                    logfc.threshold = log(2),
+                                    test.use = "wilcox")
+setDT(macro_dmso4_mirin_markers, keep.rownames = TRUE)[]
+colnames(macro_dmso4_mirin_markers)[1] <- c("gene")
+macro_dmso4_mirin_markers <- filter(macro_dmso4_mirin_markers, p_val_adj <= 0.01)
+#reduced to 143 (once filters were added)
+
+# Stress Cells
+stress_dmso4_mirin_markers <- FindMarkers(object = stage_de, 
+                                     ident.1 = "Stress+ Neuron_MIRIN", 
+                                     ident.2 = "Stress+ Neuron_DMSO4",
+                                     verbose = FALSE,
+                                     logfc.threshold = log(2),
+                                     test.use = "wilcox")
+setDT(stress_dmso4_mirin_markers, keep.rownames = TRUE)[]
+colnames(stress_dmso4_mirin_markers)[1] <- c("gene")
+stress_dmso4_mirin_markers <- filter(stress_dmso4_mirin_markers, p_val_adj <= 0.01)
+#reduced to 134 (once filters were added)
+
+neuron_npy_pos_dmso4_mirin_markers
+satellite_dmso4_mirin_markers
+schwann_dmso4_mirin_markers
+macro_dmso4_mirin_markers
+stress_dmso4_mirin_markers
+```
+
+```{r}
+# Combined expression dataframes for each stage comparison 
+
+# DMSO1 & LY
+neuron_npy_pos_dmso1_ly_markers$cell <- "NPY+ Neuron"
+neuron_npy_neg_dmso1_ly_markers$cell <- "NPY- Neuron"
+schwann_dmso1_ly_markers$cell <- "Schwann"
+satellite_dmso1_ly_markers$cell <- "Satellite"
+macro_dmso1_ly_markers$cell <- "Macrophage"
+stress_dmso1_ly_markers$cell <- "Stress+ Neuron"
+dmso1_ly <- do.call("rbind", list(neuron_npy_pos_dmso1_ly_markers,
+                                neuron_npy_neg_dmso1_ly_markers,
+                                schwann_dmso1_ly_markers,
+                                satellite_dmso1_ly_markers,
+                                macro_dmso1_ly_markers,
+                                stress_dmso1_ly_markers))
+dmso1_ly #607 genes overall
+
+# DMSO1 & MIRIN
+neuron_npy_pos_dmso1_mirin_markers$cell <- "NPY+ Neuron"
+neuron_npy_neg_dmso1_mirin_markers$cell <- "NPY- Neuron"
+schwann_dmso1_mirin_markers$cell <- "Schwann"
+satellite_dmso1_mirin_markers$cell <- "Satellite"
+macro_dmso1_mirin_markers$cell <- "Macrophage"
+stress_dmso1_mirin_markers$cell <- "Stress+ Neuron"
+dmso1_mirin <- do.call("rbind", list(neuron_npy_pos_dmso1_mirin_markers,
+                                neuron_npy_neg_dmso1_mirin_markers,
+                                schwann_dmso1_mirin_markers,
+                                satellite_dmso1_mirin_markers,
+                                macro_dmso1_mirin_markers,
+                                stress_dmso1_mirin_markers))
+dmso1_mirin #2302 genes overall
+
+# DMSO4 & LY
+neuron_npy_pos_dmso4_ly_markers$cell <- "NPY+ Neuron"
+neuron_npy_neg_dmso4_ly_markers$cell <- "NPY- Neuron"
+schwann_dmso4_ly_markers$cell <- "Schwann"
+satellite_dmso4_ly_markers$cell <- "Satellite"
+macro_dmso4_ly_markers$cell <- "Macrophage"
+stress_dmso4_ly_markers$cell <- "Stress+ Neuron"
+dmso4_ly <- do.call("rbind", list(neuron_npy_pos_dmso4_ly_markers,
+                                neuron_npy_neg_dmso4_ly_markers,
+                                schwann_dmso4_ly_markers,
+                                satellite_dmso4_ly_markers,
+                                macro_dmso4_ly_markers,
+                                stress_dmso4_ly_markers))
+dmso4_ly #105 genes overall
+
+# DMSO4 & MIRIN
+neuron_npy_pos_dmso4_mirin_markers$cell <- "NPY+ Neuron"
+neuron_npy_neg_dmso4_mirin_markers$cell <- "NPY- Neuron"
+schwann_dmso4_mirin_markers$cell <- "Schwann"
+satellite_dmso4_mirin_markers$cell <- "Satellite"
+macro_dmso4_mirin_markers$cell <- "Macrophage"
+stress_dmso4_mirin_markers$cell <- "Stress+ Neuron"
+dmso4_mirin <- do.call("rbind", list(neuron_npy_pos_dmso4_mirin_markers,
+                                neuron_npy_neg_dmso4_mirin_markers,
+                                schwann_dmso4_mirin_markers,
+                                satellite_dmso4_mirin_markers,
+                                macro_dmso4_mirin_markers,
+                                stress_dmso4_mirin_markers))
+dmso4_mirin #1768 genes overall
+```
+
+```{r}
+#### Volcano plots with log -10(p_adjusted_value) on y axis and log2 average fold change on x axis
+
+# DMSO1 & LY
+dmso1_ly <- dmso1_ly %>%
+  mutate(threshold = ifelse((avg_log2FC >= 0 & p_val_adj < 0.01), "up_sig",
+                            ifelse((avg_log2FC <= 0 & p_val_adj < 0.01) , 
+                                   "down_sig", "not_sig")))
+dmso1_ly$threshold[is.na(dmso1_ly$threshold)] <- "not_sig"
+dmso1_ly_vol <- ggplot(dmso1_ly, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(colour = threshold), size=1) +
+  ggtitle("DMSO1 vs. LY") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(0,50) + xlim(-1.5,1.5) +
+  scale_colour_manual(values=c("blue", "grey", "red3"), 
+                       name="Threshold 0.01",
+                       breaks=c("down_sig", "not_sig", "up_sig"),
+                       labels=c("Down", "None", "Up"))
+dmso1_ly_vol
+
+# DMSO1 & MIRIN
+dmso1_mirin <- dmso1_mirin %>%
+  mutate(threshold = ifelse((avg_log2FC >= 0 & p_val_adj < 0.01), "up_sig",
+                            ifelse((avg_log2FC <= 0 & p_val_adj < 0.01) , 
+                                   "down_sig", "not_sig")))
+dmso1_mirin$threshold[is.na(dmso1_mirin$threshold)] <- "not_sig"
+dmso1_mirin_vol <- ggplot(dmso1_mirin, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(colour = threshold), size=1) +
+  ggtitle("DMSO1 vs. MIRIN") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(0,50) + xlim(-1.5,1.5) +
+  scale_colour_manual(values=c("blue", "grey", "red3"), 
+                       name="Threshold 0.01",
+                       breaks=c("down_sig", "not_sig", "up_sig"),
+                       labels=c("Down", "None", "Up"))
+dmso1_mirin_vol
+
+# DMSO4 & LY
+dmso4_ly <- dmso4_ly %>%
+  mutate(threshold = ifelse((avg_log2FC >= 0 & p_val_adj < 0.01), "up_sig",
+                            ifelse((avg_log2FC <= 0 & p_val_adj < 0.01) , 
+                                   "down_sig", "not_sig")))
+dmso4_ly$threshold[is.na(dmso4_ly$threshold)] <- "not_sig"
+dmso4_ly_vol <- ggplot(dmso4_ly, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(colour = threshold), size=1) +
+  ggtitle("DMSO4 vs. LY") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(0,50) + xlim(-1.5,1.5) +
+  scale_colour_manual(values=c("blue", "grey", "red3"), 
+                       name="Threshold 0.01",
+                       breaks=c("down_sig", "not_sig", "up_sig"),
+                       labels=c("Down", "None", "Up"))
+dmso4_ly_vol
+
+# DMSO4 & MIRIN
+dmso4_mirin <- dmso4_mirin %>%
+  mutate(threshold = ifelse((avg_log2FC >= 0 & p_val_adj < 0.01), "up_sig",
+                            ifelse((avg_log2FC <= 0 & p_val_adj < 0.01) , 
+                                   "down_sig", "not_sig")))
+dmso4_mirin$threshold[is.na(dmso4_mirin$threshold)] <- "not_sig"
+dmso4_mirin_vol <- ggplot(dmso4_mirin, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(colour = threshold), size=1) +
+  ggtitle("DMSO4 vs. MIRIN") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(0,50) + xlim(-1.5,1.5) +
+  scale_colour_manual(values=c("blue", "grey", "red3"), 
+                       name="Threshold 0.01",
+                       breaks=c("down_sig", "not_sig", "up_sig"),
+                       labels=c("Down", "None", "Up"))
+dmso4_mirin_vol
+```
+
+---
+
+```{r}
+# Proportion of cells are in each cluster
+# Get Frequency
+stage_freq <- as.data.frame(table(Idents(stage_de)))
+# Get Stage total count
+stage_freq$count <- c(rep(3758, 6), rep(4378, 6), rep(1949, 6), rep(3050, 6))
+# Get proportion
+stage_freq$prop <- (stage_freq$Freq/stage_freq$count)
+stage_freq
+# Split cell type and stage into two columns
+stage_freq <- separate(stage_freq, Var1, into=c("cell_type", "stage"), sep="_" )
+# Order by cell types
+stage_freq <- stage_freq[order(stage_freq$cell_type), ]
+# Plot
+stage_freq_plot <- ggplot(data = stage_freq, 
+                          mapping = aes(x = stage, y = prop, col = cell_type, group = cell_type)) +
+  geom_point() + geom_line() + xlab("Stage") + ylab("Proportion of Cells") +
+  scale_x_discrete(limits=c("DMSO1","DMSO4","LY", "MIRIN")) +
+  theme_grey() + 
+  scale_color_manual(values=c("#FFAD0A", "#54BCD1","#FF8C8D", "#A6E000" , "#0076BB", "#C70E7B")) +
+  ggtitle("Cell Type Proportions by Stage") + theme(plot.title = element_text(hjust = 0.5)) +
+  labs(color='Cell Type') 
+stage_freq_plot
+png("stage_frequency_plot.png", units="in", width=8, height=5, res=600)
+stage_freq_plot
+dev.off()
+# Save plot
+```
+---
+
+```{r}
+# Write out dataframes
+#write.table(dmso1_ly, file = "dmso1_ly_sig_genes.txt", sep = "\t", quote = FALSE)
+write.table(dmso4_ly, file = "dmso4_ly_sig_genes.txt", sep = "\t", quote = FALSE)
+write.table(dmso1_mirin, file = "dmso1_mirin_sig_genes.txt", sep = "\t", quote = FALSE)
+write.table(dmso4_mirin, file = "dmso4_mirin_sig_genes.txt", sep = "\t", quote = FALSE)
+```
+
+
+```{r}
+#Subsetting each condition by regulation
+
+dmso1_ly_down <- filter(dmso1_ly, threshold == "down_sig")
+dmso1_ly_down <- filter(dmso1_ly, threshold == "down_sig")
+
+dmso1_ly_up <- filter(dmso1_ly, threshold == "up_sig")
+dmso1_ly_up <- filter(dmso1_ly, threshold == "up_sig")
+
+dmso4_ly_down <- filter(dmso4_ly, threshold == "down_sig")
+dmso4_ly_down <- filter(dmso4_ly, threshold == "down_sig")
+
+dmso4_ly_up <- filter(dmso4_ly, threshold == "up_sig")
+dmso4_ly_up <- filter(dmso4_ly, threshold == "up_sig")
+
+dmso1_mirin_down <- filter(dmso1_mirin, threshold == "down_sig")
+dmso1_mirin_down <- filter(dmso1_mirin, threshold == "down_sig")
+
+dmso1_mirin_up <- filter(dmso1_mirin, threshold == "up_sig")
+dmso1_mirin_up <- filter(dmso1_mirin, threshold == "up_sig")
+
+dmso4_mirin_down <- filter(dmso4_mirin, threshold == "down_sig")
+dmso4_mirin_down <- filter(dmso4_mirin, threshold == "down_sig")
+
+dmso4_mirin_up <- filter(dmso4_mirin, threshold == "up_sig")
+dmso4_mirin_up <- filter(dmso4_mirin, threshold == "up_sig")
+```
+
+---
+
+```{r}
+# Import reactome results - label up and downregulated
+dmso1_ly_path_up <- read.delim("./dmso1_ly_up_path.txt",
+                             sep = ",", header = TRUE)
+dmso1_ly_path_down <- read.delim("./dmso1_ly_down_path.txt",
+                             sep = ",", header = TRUE)
+dmso4_ly_path_up <- read.delim("./dmso4_ly_up_path.txt",
+                             sep = ",", header = TRUE)
+dmso4_ly_path_down <- read.delim("./dmso4_ly_down_path.txt",
+                             sep = ",", header = TRUE)
+dmso1_mirin_path_up <- read.delim("./dmso1_mirin_up_path.txt",
+                             sep = ",", header = TRUE)
+dmso1_mirin_path_down <- read.delim("./dmso1_mirin_down_path.txt",
+                             sep = ",", header = TRUE)
+dmso4_mirin_path_up <- read.delim("./dmso4_mirin_up_path.txt",
+                             sep = ",", header = TRUE)
+dmso4_mirin_path_down <- read.delim("./dmso4_mirin_down_path.txt",
+                             sep = ",", header = TRUE)
+
+
+# Rename columns
+colnames(dmso1_ly_path_up)[] <- c("path_ident", "pathway", "found", "total",
+                              "ratio", "p_value", "fdr", "reactions_found",
+                              "reactions_total", "reactions_ratio", "species_ident",
+                              "species_name", "gene", "mapped_gene", "reaction_ident")
+colnames(dmso1_ly_path_down)[] <- c("path_ident", "pathway", "found", "total",
+                              "ratio", "p_value", "fdr", "reactions_found",
+                              "reactions_total", "reactions_ratio", "species_ident",
+                              "species_name", "gene", "mapped_gene", "reaction_ident")
+colnames(dmso4_ly_path_up)[] <- c("path_ident", "pathway", "found", "total",
+                              "ratio", "p_value", "fdr", "reactions_found",
+                              "reactions_total", "reactions_ratio", "species_ident",
+                              "species_name", "gene", "mapped_gene", "reaction_ident")
+colnames(dmso4_ly_path_down)[] <- c("path_ident", "pathway", "found", "total",
+                              "ratio", "p_value", "fdr", "reactions_found",
+                              "reactions_total", "reactions_ratio", "species_ident",
+                              "species_name", "gene", "mapped_gene", "reaction_ident")
+colnames(dmso1_mirin_path_up)[] <- c("path_ident", "pathway", "found", "total",
+                              "ratio", "p_value", "fdr", "reactions_found",
+                              "reactions_total", "reactions_ratio", "species_ident",
+                              "species_name", "gene", "mapped_gene", "reaction_ident")
+colnames(dmso1_mirin_path_down)[] <- c("path_ident", "pathway", "found", "total",
+                              "ratio", "p_value", "fdr", "reactions_found",
+                              "reactions_total", "reactions_ratio", "species_ident",
+                              "species_name", "gene", "mapped_gene", "reaction_ident")
+colnames(dmso4_mirin_path_up)[] <- c("path_ident", "pathway", "found", "total",
+                              "ratio", "p_value", "fdr", "reactions_found",
+                              "reactions_total", "reactions_ratio", "species_ident",
+                              "species_name", "gene", "mapped_gene", "reaction_ident")
+colnames(dmso4_mirin_path_down)[] <- c("path_ident", "pathway", "found", "total",
+                              "ratio", "p_value", "fdr", "reactions_found",
+                              "reactions_total", "reactions_ratio", "species_ident",
+                              "species_name", "gene", "mapped_gene", "reaction_ident")
+
+# Add identifier columns (ex. un_lat and up regulated)
+dmso1_ly_path_up$stage <- "DMSO1_LY"
+dmso1_ly_path_up$exp <- "Up"
+dmso1_ly_path_down$stage <- "DMSO1_LY"
+dmso1_ly_path_down$exp <- "Down"
+dmso4_ly_path_up$stage <- "DMSO4_LY"
+dmso4_ly_path_up$exp <- "Up"
+dmso4_ly_path_down$stage <- "DMSO4_LY"
+dmso4_ly_path_down$exp <- "Down"
+dmso1_mirin_path_up$stage <- "DMSO1_MIRIN"
+dmso1_mirin_path_up$exp <- "Up"
+dmso1_mirin_path_down$stage <- "DMSO1_MIRIN"
+dmso1_mirin_path_down$exp <- "Down"
+dmso4_mirin_path_up$stage <- "DMSO4_MIRIN"
+dmso4_mirin_path_up$exp <- "Up"
+dmso4_mirin_path_down$stage <- "DMSO4_MIRIN"
+dmso4_mirin_path_down$exp <- "Down"
+
+# Select for necessary plotting columns
+#un_lat_path_up <- dplyr::select(un_lat_path_up, pat)
+dmso1_ly_path_up
+dmso1_ly_path_down
+dmso4_ly_path_up
+dmso4_ly_path_down
+dmso1_mirin_path_up
+dmso1_mirin_path_down
+dmso4_mirin_path_up
+dmso4_mirin_path_down
+```
+
+
+
+```{r}
+# Rbind pathway analysis results
+final_path <- do.call("rbind", list(dmso1_ly_path_up, dmso1_ly_path_down, dmso4_ly_path_up, dmso4_ly_path_down, dmso1_mirin_path_up, dmso1_mirin_path_down, dmso4_mirin_path_up, dmso4_mirin_path_down))
+
+final_path
+levels(final_path$pathway)
+grep("immune", final_path$pathway, ignore.case=TRUE)
+
+write.table(final_path, file = "final_path.txt", sep = "\t", quote = FALSE)
+```
+
+
+```{r}
+# Read in pathway conversion tables
+reactome_id <- read.delim("./reactome_path.txt", sep = ",", header = TRUE)
+reactome_path <- read.delim("./ReactomePathways.txt", header = FALSE)
+colnames(reactome_id)[] <- c("parent_id", "path_ident")
+colnames(reactome_path)[] <- c("parent_id", "parent_pathway", "species")
+reactome_path <- reactome_path[reactome_path$species == "Homo sapiens" ,]
+reactome_path <- dplyr::select(reactome_path, parent_id, parent_pathway)
+reactome_id
+reactome_path
+
+
+#write.table(reactome_path, file = "reactome_path.txt", sep = "\t", quote = FALSE)
+```
+
+```{r}
+# Map dataframe to parent id
+final_path <- right_join(reactome_id, final_path, by = "path_ident")
+final_path
+# Map parent id to parent pathway
+final_path <- right_join(reactome_path, final_path, by = "parent_id")
+final_path
+# check levels
+unique(final_path$parent_pathway)
+```
+
+```{r}
+# Check groups for further collapse
+grep("hiv", final_path$parent_pathway, ignore.case = TRUE)
+grep("Transcription", final_path$parent_pathway, ignore.case = TRUE)
+grep("neuro", final_path$parent_pathway, ignore.case = TRUE)
+grep("gap junction", final_path$parent_pathway, ignore.case = TRUE)
+grep("influenza", final_path$parent_pathway, ignore.case = TRUE)
+grep("plasma", final_path$parent_pathway, ignore.case = TRUE)
+grep("transport", final_path$parent_pathway, ignore.case = TRUE)
+grep("signal", final_path$parent_pathway, ignore.case = TRUE)
+grep("traffic", final_path$parent_pathway, ignore.case = TRUE)
+grep("immune", final_path$parent_pathway, ignore.case = TRUE)
+grep("mitotic", final_path$parent_pathway, ignore.case = TRUE)
+grep("metabolism", final_path$parent_pathway, ignore.case = TRUE)
+```
+
+
+---
+
+
+```{r}
+# Create pathway figure dataframe ( 1 is up regualted, -1 is downregulated, 0 is na)
+path_fig_df <- final_path
+path_fig_df
+# Upregulated
+# Empty columns are hashed out
+path_fig_df$HIV_1 <- ifelse(grepl("HIV", path_fig_df$parent_pathway) == TRUE & 
+                            path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Development_1 <- ifelse(grepl("Development", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                                      path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Metabolism_1 <- ifelse(grepl("Metabolism", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                                   path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Gap_Junction_1 <- ifelse(grepl("Gap", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                                     path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Trafficking_1 <- ifelse((grepl("traffic", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE) &
+                                  path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Transport_1 <- ifelse(grepl("transport", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                  path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Signalling_1 <- ifelse(grepl("Signaling", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                                   path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Transcription_1 <- ifelse(grepl("Transcription", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                        grepl("HIV", path_fig_df$parent_pathway, ignore.case=TRUE) == FALSE &
+                            path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Neuron_1 <- ifelse((grepl("Neuro", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                               grepl("synap", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                               grepl("axon", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE) & 
+                                 path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Mitosis_1 <- ifelse(grepl("Mitotic", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                   path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Apoptosis_1 <- ifelse((grepl("Apoptosis", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                               grepl("Apoptotic", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                               grepl("death", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE) &
+                               path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Plasma_Membrane_1 <- ifelse((grepl("plasma", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                                        grepl("membrane", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE) &
+                                      path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Immune_1 <- ifelse(grepl("immune", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                      path_fig_df$exp == "Up", 1, NA)
+path_fig_df$Influenza_1 <- ifelse(grepl("influenza", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                      path_fig_df$exp == "Up", 1, NA)
+# Downregulated 
+path_fig_df$HIV_2 <- ifelse(grepl("HIV", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                            path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Development_2 <- ifelse(grepl("developmental", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                                      path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Metabolism_2 <- ifelse(grepl("metabolism", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                                   path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Gap_Junction_2 <- ifelse(grepl("gap junction", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                                     path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Trafficking_2 <- ifelse(grepl("traffic", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                  path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Transport_2 <- ifelse(grepl("transport", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                  path_fig_df$exp == "Down", 1, NA)
+path_fig_df$Signalling_2 <- ifelse(grepl("Signaling", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE & 
+                                   path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Transcription_2 <- ifelse(grepl("Transcription", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                        grepl("HIV", path_fig_df$parent_pathway, ignore.case=TRUE) == FALSE &
+                            path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Neuron_2 <- ifelse((grepl("Neuro", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                               grepl("synap", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                               grepl("axon", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE) & 
+                                 path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Mitosis_2 <- ifelse(grepl("Mitotic", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                   path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Apoptosis_2 <- ifelse((grepl("Apoptosis", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                               grepl("Apoptotic", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                               grepl("death", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE) &
+                               path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Plasma_Membrane_2 <- ifelse((grepl("plasma", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE |
+                                        grepl("membrane", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE) &
+                                      path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Immune_2 <- ifelse(grepl("immune", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE  &
+                                 path_fig_df$exp == "Down", -1, NA)
+path_fig_df$Influenza_2 <- ifelse(grepl("influenza", path_fig_df$parent_pathway, ignore.case=TRUE) == TRUE &
+                                      path_fig_df$exp == "Down", -1, NA)
+# Combine up and downregulated
+path_fig_df$HIV <- coalesce(path_fig_df$HIV_2, path_fig_df$HIV_2)
+path_fig_df$Development <- coalesce(path_fig_df$Development_1, path_fig_df$Development_2)
+path_fig_df$Metabolism <- coalesce(path_fig_df$Metabolism_1, path_fig_df$Metabolism_2)
+path_fig_df$Gap_Junction <- coalesce(path_fig_df$Gap_Junction_1, path_fig_df$Gap_Junction_2)
+path_fig_df$Trafficking <- coalesce(path_fig_df$Trafficking_1, path_fig_df$Trafficking_2)
+path_fig_df$Transport <- coalesce(path_fig_df$Transport_1, path_fig_df$Transport_2)
+path_fig_df$Signalling <- coalesce(path_fig_df$Signalling_1, path_fig_df$Signalling_2)
+path_fig_df$Transcription <- coalesce(path_fig_df$Transcription_1, path_fig_df$Transcription_2)
+path_fig_df$Neuron <- coalesce(path_fig_df$Neuron_1, path_fig_df$Neuron_2)
+path_fig_df$Mitosis <- coalesce(path_fig_df$Mitosis_1, path_fig_df$Mitosis_2)
+path_fig_df$Apoptosis <- coalesce(path_fig_df$Apoptosis_1, path_fig_df$Apoptosis_2)
+path_fig_df$Plasma_Membrane <- coalesce(path_fig_df$Plasma_Membrane_1, path_fig_df$Plasma_Membrane_2)
+path_fig_df$Immune <- coalesce(path_fig_df$Immune_1, path_fig_df$Immune_2)
+# Fill NA with 0
+path_fig_df$HIV[is.na(path_fig_df$HIV)] <- 0
+path_fig_df$Development[is.na(path_fig_df$Development)] <- 0
+path_fig_df$Metabolism[is.na(path_fig_df$Metabolism)] <- 0
+path_fig_df$Gap_Junction[is.na(path_fig_df$Gap_Junction)] <- 0
+path_fig_df$Trafficking[is.na(path_fig_df$Trafficking)] <- 0
+path_fig_df$Transport[is.na(path_fig_df$Transport)] <- 0
+path_fig_df$Signalling[is.na(path_fig_df$Signalling)] <- 0
+path_fig_df$Transcription[is.na(path_fig_df$Transcription)] <- 0
+path_fig_df$Neuron[is.na(path_fig_df$Neuron)] <- 0
+path_fig_df$Mitosis[is.na(path_fig_df$Mitosis)] <- 0
+path_fig_df$Apoptosis[is.na(path_fig_df$Apoptosis)] <- 0
+path_fig_df$Plasma_Membrane[is.na(path_fig_df$Plasma_Membrane)] <- 0
+path_fig_df$Immune[is.na(path_fig_df$Immune)] <- 0
+path_fig_df
+# Other column up and down...
+path_fig_df$Other_1 <- ifelse((rowSums(path_fig_df[47:59]) == 0 & path_fig_df$exp == "Up"), 1, NA)
+path_fig_df$Other_2 <- ifelse((rowSums(path_fig_df[47:59]) == 0 & path_fig_df$exp == "Down"), -1 ,NA)
+path_fig_df$Other <- coalesce(path_fig_df$Other_1, path_fig_df$Other_2)
+path_fig_df$Other[is.na(path_fig_df$Other)] <- 0
+path_fig_df
+```
+
+
+```{r}
+# Select for figure columns
+path_fig_df_heat <- dplyr::select(path_fig_df, gene, stage, exp, HIV, Development,
+                                  Metabolism, Gap_Junction, Trafficking, Transport, Signalling,
+                                  Transcription, Neuron, Mitosis, Apoptosis, 
+                                  Plasma_Membrane, Immune, Other)
+# Add a row for every gene then aggregate by gene, stage, and regulation (up/down)
+path_fig_df_heat$gene <- as.character(path_fig_df_heat$gene)
+# Expand multi gene rows
+path_fig_df_heat <- path_fig_df_heat %>% 
+    mutate(gene = strsplit(as.character(gene), ";")) %>% 
+    unnest(gene)
+# check unique
+length(unique(path_fig_df_heat$gene)) #1307
+path_fig_df_heat
+# Aggregate and sum
+path_fig_df_heat <- aggregate(. ~ stage + exp + gene, path_fig_df_heat, sum)
+# Create unique ide
+path_fig_df_heat$regulation <- ifelse((path_fig_df_heat$exp == "Up"), "+", "-")
+path_fig_df_heat$id <- paste(path_fig_df_heat$gene, path_fig_df_heat$regulation, sep = "")
+# Get row annotation for heatmap from meta rows
+Stage <- path_fig_df_heat$stage
+# remove meta rows
+path_fig_df_heat <- dplyr::select(path_fig_df_heat, -gene, -exp, -regulation, -stage)
+path_fig_df_heat
+# Separate into meta data and identify rownames
+path_heat_meta <- dplyr::select(path_fig_df, stage, exp)
+path_heat_meta$regulation <- ifelse((path_heat_meta$exp == "Up"), "+", "-")
+path_heat_meta <- dplyr::select(path_heat_meta, -exp)
+path_heat_meta
+```
+
+```{r}
+# Make heatmap
+# Make genes rownames for heatmap
+path_fig_df_heat_gene <- path_fig_df_heat[,1:14]
+path_fig_df_heat_gene
+
+
+#FIX ROW NAMES
+rownames(path_fig_df_heat_gene) <- path_fig_df_heat$id
+Pathway <- colnames(path_fig_df_heat_gene)
+path_fig_df_heat_gene
+```
+
+
+```{r}
+path_annotation <- HeatmapAnnotation(df = as.matrix(Pathway),
+                                       col = list(Pathway = c(Other = "#F7E690",
+                                                              Transcription = "#F7AA14",
+                                                              HIV = "#EF7C12" ,
+                                                              Signalling = "#D72000" ,
+                                                              Neuron = "#B25D94",
+                                                              Mitosis = "#CB87B4",
+                                                              Trafficking = "#EFC7E6" ,
+                                                              Plasma_Membrane = "#AFDFEF",
+                                                              Metabolism = "#54BCD1",
+                                                              Immune = "#0076C0",
+                                                              Apoptosis = "#006400",
+                                                              Gap_Junction = "#2CB11B",
+                                                              Development = "#95C65C",
+                                                              Transport = "#BDDE9B")),
+                               annotation_legend_param = list(legend_height = unit(1, "cm"),
+                                                              title = "Pathway",
+                                                              legend_width = unit(0.20, "cm"),
+                                                              title_gp = gpar(fontsize = 11),
+                                                              labels_gp = gpar(fontsize = 9)))
+# Row Annotation - check documentation
+stage_annotation <- rowAnnotation(df = as.matrix(Stage),
+                                  col = list(Stage = c(DMSO1_LY = "#007BC3",
+                                                       DMS01_MIRIN = "#FFB90F",
+                                                       DMSO4_LY = "#FFC90F",
+                                                       DMSO4_MIRIN = "#2CB11B")),
+                               annotation_legend_param = list(legend_height = unit(1, "cm"),
+                                                              title = "Stage",
+                                                              legend_width = unit(0.20, "cm"),
+                                                              title_gp = gpar(fontsize = 11),
+                                                              labels_gp = gpar(fontsize = 9)))
+# Heatmap
+phos_heat_drug <- Heatmap(path_fig_df_heat_gene,
+                         top_annotation = path_annotation,
+                         show_column_names = F, 
+                         show_row_names = T,
+                         cluster_rows = T,
+                         cluster_columns = T,
+                         row_names_gp = gpar(fontsize = 7),
+                         heatmap_legend_param = list(title = "Pathway Count",
+                                                     title_gp = gpar(fontsize = 11),
+                                                     labels_gp = gpar(fontsize = 9)),
+                         col = colorRamp2(c(-5, 0, 5), 
+                                          c("blue", "gray90", "red")),
+                         row_title_gp = gpar(fontsize = 10),
+                         rect_gp = gpar(col = "white", lwd = 0.75))
+final_path_heatmap <- draw(stage_annotation + phos_heat_drug, heatmap_legend_side = "right")
+#png("pathway_heatmap.png", units="in", width=8, height=5, res=600)
+final_path_heatmap
+#dev.off()
+
+```
+
+
